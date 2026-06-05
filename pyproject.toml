@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synth"
+version = "0.1.0"
+description = "Synthetic seismogram generator for geophysicists"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "PyQt5>=5.15",
+    "lasio>=0.30",
+    "numpy>=1.24",
+    "pyqtgraph>=0.13",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-qt>=4.2",
+    "pyinstaller>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
+qt_default_raising = true
