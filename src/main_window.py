@@ -1,14 +1,11 @@
-import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pyqtgraph as pg
-from PyQt5 import uic
-from PyQt5.QtCore import QSettings
-from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import (
-    QAction,
+from PySide6.QtCore import QSettings
+from PySide6.QtGui import QAction, QActionGroup, QIcon
+from PySide6.QtWidgets import (
     QFileDialog,
     QMainWindow,
     QMenu,
@@ -17,17 +14,8 @@ from PyQt5.QtWidgets import (
 )
 
 from core import las_loader, seismic, wavelet
-
-
-def _ui_file() -> str:
-    base = Path(sys._MEIPASS) if hasattr(sys, "_MEIPASS") else Path(__file__).parent
-    return str(base / "gui" / "qt" / "SynthMainWindow.ui")
-
-
-def _app_icon() -> QIcon:
-    base = Path(sys._MEIPASS) if hasattr(sys, "_MEIPASS") else Path(__file__).parent
-    return QIcon(str(base / "gui" / "resources" / "icons" / "logo.png"))
-
+from gui.qt.ui_SynthMainWindow import Ui_MainWindow
+from theme import DEFAULT_THEME, THEME_DARK, THEME_LABELS, THEMES, apply_theme
 
 _DELIMITERS: dict[str, str | None] = {
     "space": None,
@@ -47,14 +35,15 @@ _TRACK_COLORS = {
     "synth": "k",
 }
 _GRID_ALPHA = 0.15
+_THEME_SETTINGS_KEY = "theme"
 
 
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow, Ui_MainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
-        uic.loadUi(_ui_file(), self)
+        self.setupUi(self)
         self.setWindowTitle("Synth")
-        self.setWindowIcon(_app_icon())
+        self.setWindowIcon(QIcon(":/icons/icons/logo.png"))
 
         self._settings = QSettings("Synth", "Synth")
 
@@ -67,6 +56,7 @@ class MainWindow(QMainWindow):
         self._setup_wavelet_preview()
         self._setup_menus()
         self._connect_signals()
+        self._apply_theme()
         self.mwFileTypeRadioButton.setChecked(True)
 
     # ------------------------------------------------------------------ setup
@@ -116,17 +106,39 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._wavelet_plot)
 
     def _setup_menus(self):
-        # Edit menu (not in .ui — added programmatically)
         edit_menu = QMenu("Edit", self)
         self.menubar.insertMenu(self.menuView.menuAction(), edit_menu)
         self._action_clear_plots = QAction("Clear Plots", self)
         edit_menu.addAction(self._action_clear_plots)
+        edit_menu.addSeparator()
+        self._setup_theme_menu(edit_menu)
 
-        # Replace the flat actionRecent_Files with a proper submenu
         self._recent_menu = QMenu("Recent Files", self)
         self.menuFile.insertMenu(self.actionRecent_Files, self._recent_menu)
         self.menuFile.removeAction(self.actionRecent_Files)
         self._refresh_recent_menu()
+
+    def _setup_theme_menu(self, edit_menu: QMenu):
+        theme_menu = QMenu("Theme", self)
+        edit_menu.addMenu(theme_menu)
+
+        self._theme_action_group = QActionGroup(self)
+        self._theme_action_group.setExclusive(True)
+        self._theme_actions: dict[str, QAction] = {}
+        current_theme = self._current_theme()
+
+        for theme in THEMES:
+            action = QAction(THEME_LABELS[theme], self)
+            action.setCheckable(True)
+            action.setChecked(theme == current_theme)
+            action.triggered.connect(
+                lambda checked, selected_theme=theme: self._on_theme_selected(
+                    selected_theme, checked
+                )
+            )
+            self._theme_action_group.addAction(action)
+            theme_menu.addAction(action)
+            self._theme_actions[theme] = action
 
     def _connect_signals(self):
         self.actionOpen_LAS.triggered.connect(self._on_open_las)
@@ -157,6 +169,55 @@ class MainWindow(QMainWindow):
         self.mwFileReadButton.clicked.connect(self._on_read_wavelet_file)
         self.mwComputeButton.clicked.connect(self._on_compute)
         self.mwExportResultsButton.clicked.connect(self._on_export_csv)
+
+    def _current_theme(self) -> str:
+        theme = self._settings.value(_THEME_SETTINGS_KEY, DEFAULT_THEME)
+        return theme if theme in THEMES else DEFAULT_THEME
+
+    def _on_theme_selected(self, theme: str, checked: bool):
+        if not checked:
+            return
+        self._settings.setValue(_THEME_SETTINGS_KEY, theme)
+        self._apply_theme(theme)
+
+    def _apply_theme(self, theme: str | None = None):
+        theme = theme or self._current_theme()
+        apply_theme(theme)
+        self._apply_plot_theme(theme)
+
+    def _apply_plot_theme(self, theme: str):
+        dark = theme == THEME_DARK
+        background = "#151719" if dark else "w"
+        foreground = "#f1f3f4" if dark else "k"
+        grid_alpha = 0.22 if dark else _GRID_ALPHA
+
+        pg.setConfigOption("background", background)
+        pg.setConfigOption("foreground", foreground)
+        self._display.setBackground(background)
+        self._wavelet_plot.setBackground(background)
+
+        for track in self._all_tracks:
+            track.showGrid(x=True, y=True, alpha=grid_alpha)
+            for axis_name in ("left", "bottom"):
+                axis = track.getAxis(axis_name)
+                axis.setPen(pg.mkPen(foreground))
+                axis.setTextPen(pg.mkPen(foreground))
+
+        for axis_name in ("left", "bottom"):
+            axis = self._wavelet_plot.getAxis(axis_name)
+            axis.setPen(pg.mkPen(foreground))
+            axis.setTextPen(pg.mkPen(foreground))
+
+        if self._wavelet is not None:
+            self._update_wavelet_preview()
+        if self._synth is not None:
+            self._plot_tracks()
+
+    def _plot_foreground(self) -> str:
+        return "#f1f3f4" if self._current_theme() == THEME_DARK else "k"
+
+    def _plot_fill(self):
+        return pg.mkBrush(241, 243, 244, 150) if self._current_theme() == THEME_DARK else pg.mkBrush(0, 0, 0, 180)
 
     # ------------------------------------------------------------------ recent files
 
@@ -215,7 +276,8 @@ class MainWindow(QMainWindow):
 
     def _clear_track(self, track: pg.PlotItem):
         track.clear()
-        track.showGrid(x=True, y=True, alpha=_GRID_ALPHA)
+        alpha = 0.22 if self._current_theme() == THEME_DARK else _GRID_ALPHA
+        track.showGrid(x=True, y=True, alpha=alpha)
 
     # ------------------------------------------------------------------ slots
 
@@ -325,7 +387,12 @@ class MainWindow(QMainWindow):
         n = len(self._wavelet)
         x = np.arange(n) - n // 2
         self._wavelet_plot.plot(x, self._wavelet, pen=pg.mkPen("b", width=2))
-        self._wavelet_plot.addLine(y=0, pen=pg.mkPen("k", width=0.5, style=pg.QtCore.Qt.DashLine))
+        self._wavelet_plot.addLine(
+            y=0,
+            pen=pg.mkPen(
+                self._plot_foreground(), width=0.5, style=pg.QtCore.Qt.PenStyle.DashLine
+            ),
+        )
 
     def _on_compute(self):
         if self._las is None:
@@ -386,15 +453,17 @@ class MainWindow(QMainWindow):
         self._track_ai.plot(self._ai, self._depth, pen=pg.mkPen("g", width=2))
 
         self._clear_track(self._track_refl)
-        self._track_refl.plot(self._refl, self._depth_refl, pen=pg.mkPen("k", width=2))
+        self._track_refl.plot(
+            self._refl, self._depth_refl, pen=pg.mkPen(self._plot_foreground(), width=2)
+        )
 
         self._clear_track(self._track_synth)
-        self._track_synth.plot(self._synth, self._depth_refl, pen=pg.mkPen("k", width=2))
+        self._track_synth.plot(
+            self._synth, self._depth_refl, pen=pg.mkPen(self._plot_foreground(), width=2)
+        )
         pos_curve = self._track_synth.plot(np.maximum(self._synth, 0.0), self._depth_refl, pen=None)
         zero_curve = self._track_synth.plot(np.zeros_like(self._synth), self._depth_refl, pen=None)
-        self._track_synth.addItem(
-            pg.FillBetweenItem(zero_curve, pos_curve, brush=pg.mkBrush(0, 0, 0, 180))
-        )
+        self._track_synth.addItem(pg.FillBetweenItem(zero_curve, pos_curve, brush=self._plot_fill()))
 
         for track in self._all_tracks:
             track.getViewBox().enableAutoRange(pg.ViewBox.XAxis, True)
